@@ -11,11 +11,16 @@ app.use(express.json({ limit: '100mb' }));
 const downloadFile = (url, dest) => new Promise((resolve, reject) => {
   const file = fs.createWriteStream(dest);
   const client = url.startsWith('https') ? https : http;
-  client.get(url, res => res.pipe(file).on('close(() => resolve()).on('error', reject))
-        .on('error', reject);
+  client.get(url, res => {
+    res.pipe(file)
+      .on('close', () => resolve())
+      .on('error', err => {
+        fs.unlink(dest, () => {});
+        reject(err);
+      });
+  }).on('error', reject);
 });
 
-// Health check endpoint Railway expects
 app.get('/health', (req, res) => res.json({status:'ok'}));
 app.get('/', (req, res) => res.json({status:'FFmpeg server running'}));
 
