@@ -1,47 +1,86 @@
 const express = require('express');
-const { exec } = require('child_process');
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegInstaller = require('ffmpeg-static');
+const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
-const http = require('http');
+const { promisify } = require('util');
+const pipeline = promisify(require('stream').pipeline);
 
 const app = express();
-app.use(express.json({ limit: '100mb' }));
+app.use(express.json());
 
-// instant health check
-app.get(['/','/health'], (req,res) => res.send('OK'));
+// Set ffmpeg path
+ffmpeg.setFfmpegPath(ffmpegInstaller);
 
-const downloadFile = (url, dest) => new Promise((resolve, reject) => {
-  const file = fs.createWriteStream(dest);
-  const client = url.startsWith('https') ? https : http;
-  client.get(url, res => {
-    res.pipe(file)
-      .on('close', () => resolve())
-      .on('error', err => { fs.unlink(dest,()=>{}); reject(err); });
-  }).on('error', reject);
-});
+app.get('/', (req, res) => res.send('FFmpeg Render Server Running'));
 
 app.post('/render', async (req, res) => {
-  const { images, duration = 3 } = req.body;
-  if (!images?.length) return res.status(400).json({error:'no images'});
+    const workDir = path.join(__dirname, 'temp-' + Date.now());
+    
+    try {
+        console.log('Received render request', req.body);
+        const { images, captions } = req.body;
+        
+        if (!images || !images.length) {
+            return res.status(400).json({ error: 'No images provided' });
+        }
 
-  const tmpDir = `/tmp/v_${Date.now()}`;
-  fs.mkdirSync(tmpDir, {recursive:true});
+        // Create temp dir
+        if (!fs.existsSync(workDir)) fs.mkdirSync(workDir);
 
-  try {
-    for (let i = 0; i < images.length; i++) await downloadFile(images[i], path.join(tmpDir, `i${i}.jpg`));
-    const out = path.join(tmpDir, 'out.mp4');
-    exec(`ffmpeg -y -framerate 1/${duration} -pattern_type glob -i '${tmpDir}/i*.jpg' -c:v libx264 -pix_fmt yuv420p ${out}`, err => {
-      if (err) return res.status(500).json({error: err.message});
-      const video = fs.readFileSync(out).toString('base64');
-      fs.rmSync(tmpDir, {recursive:true, force:true});
-      res.json({success:true, video});
-    });
-  } catch (e) {
-    fs.rmSync(tmpDir, {recursive:true, force:true});
-    res.status(500).json({error:e.message});
-  }
+        // 1. Download Images
+        const imagePaths = [];
+        for (let i = 0; i < images.length; i++) {
+            const imgPath = path.join(workDir, `image-${i}.jpg`);
+            const response = await fetch(images[i]);
+            if (!response.ok) throw new Error(`Failed to fetch image ${i}`);
+            await pipeline(response.body, fs.createWriteStream(imgPath));
+            imagePaths.push(imgPath);
+        }
+
+        const outputPath = path.join(workDir, 'output.mp4');
+
+        // 2. Run FFmpeg
+        await new Promise((resolve, reject) => {
+            const command = ffmpeg();
+            
+            // Add inputs
+            imagePaths.forEach(p => command.addInput(p).loop(3));
+
+            command
+                .complexFilter([
+                    // Scale and pad all inputs to 1080x1920
+                    ...imagePaths.map((_, i) => `[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[v${i}];`).join(''),
+                    // Concat
+                    `${imagePaths.map((_, i) => `[v${i}]`).join('')}concat=n=${imagePaths.length}:v=1:a=0[v]`
+                ])
+                .map('[v]')
+                .videoCodec('libx264')
+                .outputOptions([
+                    '-pix_fmt yuv420p',
+                    '-t ' + (imagePaths.length * 3),
+                    '-preset ultrafast' // Faster rendering
+                ])
+                .save(outputPath)
+                .on('end', resolve)
+                .on('error', reject);
+        });
+
+        // 3. Stream back the file
+        res.setHeader('Content-Type', 'video/mp4');
+        const stream = fs.createReadStream(outputPath);
+        stream.pipe(res);
+
+        // Cleanup after stream finishes
+        stream.on('close', () => {
+            fs.rmSync(workDir, { recursive: true, force: true });
+        });
+
+    } catch (error) {
+        console.error('Render error:', error);
+        res.status(500).json({ error: error.message });
+        // Cleanup on error
+        if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
+    }
 });
-
-const port = process.env.PORT || 3000;
-app.listen(port, '0.0.0.0', () => console.log('FFmpeg server LIVE on port', port));
