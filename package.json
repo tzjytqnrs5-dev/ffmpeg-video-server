@@ -6,6 +6,18 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
-  }
+    "express": "^4.22.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tzjytqnrs5-dev/ffmpeg-video-server.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/tzjytqnrs5-dev/ffmpeg-video-server/issues"
+  },
+  "homepage": "https://github.com/tzjytqnrs5-dev/ffmpeg-video-server#readme",
+  "description": ""
 }
