@@ -10,90 +10,116 @@ const pipeline = promisify(require('stream').pipeline);
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Increased limit for complex filters
+app.use(express.json({ limit: '50mb' })); // Increase limit for complex payloads
 
 ffmpeg.setFfmpegPath(ffmpegInstaller);
 
 async function downloadFile(url, dest) {
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to fetch ${url}`);
+    if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
     await pipeline(response.body, fs.createWriteStream(dest));
     return dest;
 }
 
-app.get('/', (req, res) => res.send('Generic FFmpeg Runner v2'));
+app.get('/', (req, res) => res.send('Generic FFmpeg Runner Active'));
 
 app.post('/render', async (req, res) => {
     const workDir = path.join(__dirname, 'temp-' + Date.now());
     
     try {
-        if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
-        
+        console.log('Received generic render request');
         const { inputs, resources, filterComplex, outputOptions } = req.body;
-        
-        // 1. Download Inputs (Images, Video, Audio)
-        // inputs: [{ url: string, options: string[] }]
-        const inputPaths = [];
-        for (let i = 0; i < inputs.length; i++) {
-            const ext = path.extname(new URL(inputs[i].url).pathname) || '.tmp';
-            const dest = path.join(workDir, `input-${i}${ext}`);
-            await downloadFile(inputs[i].url, dest);
-            inputPaths.push({ path: dest, options: inputs[i].options || [] });
-        }
 
-        // 2. Download Resources (Fonts, Watermarks - things not in the input stream)
-        // resources: [{ url: string, name: string }]
+        if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
+
+        // 1. Download Resources (Fonts, Watermarks, etc.)
+        // We map names like 'font.ttf' to actual paths
         const resourceMap = {};
-        if (resources) {
-            for (const res of resources) {
-                const dest = path.join(workDir, res.name);
-                await downloadFile(res.url, dest);
-                // Windows/Linux path safety: escape backslashes for FFmpeg filters
-                resourceMap[res.name] = dest.replace(/\\/g, '/').replace(/:/g, '\\:'); 
+        if (resources && Array.isArray(resources)) {
+            console.log(`Downloading ${resources.length} resources...`);
+            for (const r of resources) {
+                const fileName = r.name || path.basename(r.url);
+                const dest = path.join(workDir, fileName);
+                await downloadFile(r.url, dest);
+                resourceMap[fileName] = dest;
             }
         }
 
-        // 3. Inject Resource Paths into Filter String
-        // Replaces {{font.ttf}} with actual local path
+        // 2. Download Inputs (Images, Video, Audio)
+        const inputPaths = [];
+        if (inputs && Array.isArray(inputs)) {
+            console.log(`Downloading ${inputs.length} inputs...`);
+            for (let i = 0; i < inputs.length; i++) {
+                const inp = inputs[i];
+                const dest = path.join(workDir, `input-${i}${path.extname(inp.url) || '.tmp'}`);
+                await downloadFile(inp.url, dest);
+                inputPaths.push({ path: dest, options: inp.options || [] });
+            }
+        }
+
+        // 3. Prepare Filter String
+        // Replace placeholders like {{font.ttf}} with actual absolute paths
         let finalFilter = filterComplex;
-        Object.keys(resourceMap).forEach(name => {
-            finalFilter = finalFilter.split(`{{${name}}}`).join(resourceMap[name]);
+        Object.entries(resourceMap).forEach(([name, localPath]) => {
+            // Escape backslashes for FFmpeg filter syntax if on Windows, but Railway is Linux
+            // FFmpeg requires escaping ':' in paths in filter strings sometimes
+            // Standard Linux path should be fine, but let's ensure.
+            const escapedPath = localPath.replace(/\\/g, '/').replace(/:/g, '\\:');
+            finalFilter = finalFilter.replace(new RegExp(`{{${name}}}`, 'g'), escapedPath);
         });
 
-        console.log('Running FFmpeg with filter length:', finalFilter.length);
-
+        console.log('Starting FFmpeg...');
         const outputPath = path.join(workDir, 'output.mp4');
-        
+
         await new Promise((resolve, reject) => {
             const command = ffmpeg();
 
             // Add Inputs
             inputPaths.forEach(inp => {
                 command.addInput(inp.path);
-                if (inp.options.length) command.inputOptions(inp.options);
+                if (inp.options.length > 0) command.inputOptions(inp.options);
             });
 
+            // Apply Complex Filter
+            if (finalFilter) {
+                command.complexFilter(finalFilter);
+            }
+
+            // Apply Output Options
+            if (outputOptions) {
+                command.outputOptions(outputOptions);
+            }
+
             command
-                .complexFilter(finalFilter)
-                .outputOptions(outputOptions || [])
                 .save(outputPath)
-                .on('end', resolve)
-                .on('error', reject);
+                .on('end', () => {
+                    console.log('Render finished');
+                    resolve();
+                })
+                .on('error', (err) => {
+                    console.error('FFmpeg error:', err);
+                    reject(err);
+                });
         });
 
+        console.log('Sending response...');
         res.setHeader('Content-Type', 'video/mp4');
         const readStream = fs.createReadStream(outputPath);
         readStream.pipe(res);
-        readStream.on('close', () => {
-            try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (e) {}
-        });
+        readStream.on('close', () => cleanup(workDir));
 
     } catch (error) {
-        console.error('Render Error:', error);
-        if (!res.headersSent) res.status(500).json({ error: error.message });
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (e) {}
+        console.error('Generic Render Error:', error);
+        if (!res.headersSent) res.status(500).send(error.message);
+        cleanup(workDir);
     }
 });
 
+function cleanup(dir) {
+    try {
+        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    } catch (e) { console.error('Cleanup error:', e); }
+}
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Runner on ${PORT}`));
+app.listen(PORT, () => console.log(`Generic Server running on port ${PORT}`));
