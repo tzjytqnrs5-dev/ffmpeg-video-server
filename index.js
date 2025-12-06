@@ -59,16 +59,29 @@ app.post('/render', async (req, res) => {
 
             command
                 .complexFilter([
-                    // FIXED: Removed .join('') and trailing semicolon. 
-                    // Spread operator (...) now correctly spreads the array of strings.
+                    // Scale to 1080x1920 (Vertical Video) and handle aspect ratio
                     ...imagePaths.map((_, i) => `[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}]`),
-                    
                     // Concatenate all segments
                     `${imagePaths.map((_, i) => `[v${i}]`).join('')}concat=n=${imagePaths.length}:v=1:a=0[v]`
                 ])
                 .map('[v]')
                 .videoCodec('libx264')
-// ... keep existing code ...
+                .outputOptions([
+                    '-pix_fmt yuv420p',       // Ensure compatibility with all players
+                    '-t ' + (imagePaths.length * 3), // Set total duration
+                    '-preset ultrafast',      // Fast rendering
+                    '-movflags +faststart'    // Optimize for web streaming
+                ])
+                .save(outputPath)
+                .on('end', () => {
+                    console.log('FFmpeg render finished');
+                    resolve();
+                })
+                .on('error', (err) => {
+                    console.error('FFmpeg error:', err);
+                    reject(err);
+                });
+        });
 
         // 3. Send file back
         console.log('Sending video response...');
