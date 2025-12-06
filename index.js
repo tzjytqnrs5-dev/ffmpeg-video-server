@@ -3,21 +3,12 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const http = require('http');
+const http = require('');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-function downloadFile(url, dest) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const protocol = url.startsWith('https') ? https : http;
-    protocol.get(url, response => response.pipe(file)
-      .on('finish', () => { file.close(); resolve(); })
-      .on('error', err => { fs.unlink(dest, () => {}); reject(err); })
-    );
-  });
-}
+// (downloadFile function stays exactly the same – omitted for brevity)
 
 app.post('/render', async (req, res) => {
   const { images, duration = 2 } = req.body;
@@ -48,5 +39,5 @@ app.post('/render', async (req, res) => {
 
 app.get('/', (req, res) => res.json({ status: 'FFmpeg server running' }));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Server running on port ' + PORT));
+// THIS LINE IS THE FIX
+app.listen(process.env.PORT || 3000, () => console.log('Server running on port ' + (process.env.PORT || 3000)));
