@@ -12,62 +12,41 @@ function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
     const protocol = url.startsWith('https') ? https : http;
-    
-    protocol.get(url, (response) => {
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-    }).on('error', (err) => {
-      fs.unlink(dest, () => {});
-      reject(err);
-    });
+    protocol.get(url, response => response.pipe(file)
+      .on('finish', () => { file.close(); resolve(); })
+      .on('error', err => { fs.unlink(dest, () => {}); reject(err); })
+    );
   });
 }
 
 app.post('/render', async (req, res) => {
   const { images, duration = 2 } = req.body;
-  
-  if (!images || images.length === 0) {
-    return res.status(400).json({ error: 'No images provided' });
-  }
+  if (!images || images.length === 0) return res.status(400).json({ error: 'No images' });
 
   const tmpDir = `/tmp/video_${Date.now()}`;
   fs.mkdirSync(tmpDir, { recursive: true });
 
   try {
     for (let i = 0; i < images.length; i++) {
-      await downloadFile(images[i], path.join(tmpDir, `image${i}.jpg`));
+      await downloadFile(images[i], path.join(tmpDir, `img${i}.jpg`));
     }
 
-    const outputPath = path.join(tmpDir, 'output.mp4');
-    const cmd = `ffmpeg -framerate 1/${duration} -pattern_type glob -i '${tmpDir}/image*.jpg' -c:v libx264 -pix_fmt yuv420p ${outputPath}`;
-    
+    const output = path.join(tmpDir, 'output.mp4');
+    const cmd = `ffmpeg -y -framerate 1/${duration} -pattern_type glob -i '${tmpDir}/img*.jpg' -c:v libx264 -pix_fmt yuv420p ${output}`;
+
     exec(cmd, (error) => {
-      if (error) {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-        return res.status(500).json({ error: 'FFmpeg failed', details: error.message });
-      }
-
-      const videoBuffer = fs.readFileSync(outputPath);
+      if (error) return res.status(500).json({ error: error.message });
+      const video = fs.readFileSync(output).toString('base64');
       fs.rmSync(tmpDir, { recursive: true, force: true });
-      
-      res.json({
-        success: true,
-        video: videoBuffer.toString('base64')
-      });
+      res.json({ success: true, video });
     });
-
-  } catch (err) {
+  } catch (e) {
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: e.message });
   }
 });
 
-app.get('/', (req, res) => {
-  res.json({ status: 'FFmpeg server running' });
-});
+app.get('/', (req, res) => res.json({ status: 'FFmpeg server running' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Server on port ' + PORT)); EOF
+app.listen(PORT, () => console.log('Server running on port ' + PORT));
