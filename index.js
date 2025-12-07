@@ -20,95 +20,52 @@ app.post('/render', async (req, res) => {
     const downloadedFiles = [];
 
     try {
-        // Download resources (fonts) to /tmp/
         for (const resource of resources) {
             const localPath = `/tmp/${resource.name}`;
-            console.log(`Downloading ${resource.name}...`);
-            
             const response = await fetch(resource.url);
-            if (!response.ok) {
-                throw new Error(`Failed to download ${resource.name}: ${response.statusText}`);
-            }
-            
-            const buffer = await response.arrayBuffer();
-            await writeFile(localPath, Buffer.from(buffer));
+            if (!response.ok) throw new Error(`Download failed: ${resource.name}`);
+            await writeFile(localPath, Buffer.from(await response.arrayBuffer()));
             downloadedFiles.push(localPath);
-            console.log(`Saved to ${localPath}`);
         }
 
-        // Build FFmpeg arguments array
         const ffmpegArgs = [];
 
-        // Add inputs with their options
         for (const input of inputs) {
-            if (input.options && Array.isArray(input.options)) {
-                ffmpegArgs.push(...input.options);
+            if (input.options) {
+                const opts = Array.isArray(input.options) ? input.options : input.options.split(' ').filter(Boolean);
+                ffmpegArgs.push(...opts);
             }
             ffmpegArgs.push('-i', input.url);
         }
 
-        // Add filter_complex
         ffmpegArgs.push('-filter_complex', filterComplex);
+        
+        const outOpts = Array.isArray(outputOptions) ? outputOptions : outputOptions.split(' ').filter(Boolean);
+        ffmpegArgs.push(...outOpts, outputFile);
 
-        // Add output options
-        if (Array.isArray(outputOptions)) {
-            ffmpegArgs.push(...outputOptions);
-        }
+        console.log('FFmpeg:', ffmpegArgs.join(' '));
 
-        // Output file
-        ffmpegArgs.push(outputFile);
-
-        console.log('Running: ffmpeg', ffmpegArgs.join(' '));
-
-        // Execute FFmpeg
         await new Promise((resolve, reject) => {
-            const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+            const proc = spawn('ffmpeg', ffmpegArgs);
             let stderr = '';
-
-            ffmpegProcess.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-
-            ffmpegProcess.on('error', (err) => {
-                reject(new Error(`Failed to start ffmpeg: ${err.message}`));
-            });
-
-            ffmpegProcess.on('close', (code) => {
-                if (code === 0) {
-                    resolve();
-                } else {
-                    reject(new Error(`FFmpeg exited with code ${code}\n${stderr}`));
-                }
-            });
+            proc.stderr.on('data', (d) => stderr += d);
+            proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`Exit ${code}: ${stderr}`)));
         });
 
-        // Read output file
         const videoBuffer = await readFile(outputFile);
-
         res.setHeader('Content-Type', 'video/mp4');
         res.send(videoBuffer);
 
-        // Cleanup
         await unlink(outputFile);
-        for (const file of downloadedFiles) {
-            await unlink(file).catch(() => {});
-        }
+        for (const f of downloadedFiles) await unlink(f).catch(() => {});
 
     } catch (error) {
         console.error('Error:', error.message);
         res.status(500).send(error.message);
-
-        // Cleanup on error
-        for (const file of downloadedFiles) {
-            await unlink(file).catch(() => {});
-        }
+        for (const f of downloadedFiles) await unlink(f).catch(() => {});
     }
 });
 
-app.get('/health', (req, res) => {
-    res.send('OK');
-});
+app.get('/health', (req, res) => res.send('OK'));
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server on port ${PORT}`));
