@@ -23,7 +23,7 @@ app.post('/render', async (req, res) => {
         // Download resources (fonts) to /tmp/
         for (const resource of resources) {
             const localPath = `/tmp/${resource.name}`;
-            console.log(`Downloading resource from ${resource.url} to ${localPath}`);
+            console.log(`Downloading ${resource.name}...`);
             
             const response = await fetch(resource.url);
             if (!response.ok) {
@@ -33,50 +33,56 @@ app.post('/render', async (req, res) => {
             const buffer = await response.arrayBuffer();
             await writeFile(localPath, Buffer.from(buffer));
             downloadedFiles.push(localPath);
-            console.log(`Downloaded resource: ${localPath}`);
+            console.log(`Saved to ${localPath}`);
         }
 
-        // Build FFmpeg command
-        const args = [];
+        // Build FFmpeg arguments array
+        const ffmpegArgs = [];
 
-        // Add inputs
+        // Add inputs with their options
         for (const input of inputs) {
-            if (input.options) {
-                args.push(...input.options);
+            if (input.options && Array.isArray(input.options)) {
+                ffmpegArgs.push(...input.options);
             }
-            args.push('-i', input.url);
+            ffmpegArgs.push('-i', input.url);
         }
 
         // Add filter_complex
-        args.push('-filter_complex', filterComplex);
+        ffmpegArgs.push('-filter_complex', filterComplex);
 
         // Add output options
-        args.push(...outputOptions);
+        if (Array.isArray(outputOptions)) {
+            ffmpegArgs.push(...outputOptions);
+        }
 
         // Output file
-        args.push(outputFile);
+        ffmpegArgs.push(outputFile);
 
-        console.log('FFmpeg command:', 'ffmpeg', args.join(' '));
+        console.log('Running: ffmpeg', ffmpegArgs.join(' '));
 
         // Execute FFmpeg
         await new Promise((resolve, reject) => {
-            const ffmpeg = spawn('ffmpeg', args);
+            const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
             let stderr = '';
 
-            ffmpeg.stderr.on('data', (data) => {
+            ffmpegProcess.stderr.on('data', (data) => {
                 stderr += data.toString();
             });
 
-            ffmpeg.on('close', (code) => {
+            ffmpegProcess.on('error', (err) => {
+                reject(new Error(`Failed to start ffmpeg: ${err.message}`));
+            });
+
+            ffmpegProcess.on('close', (code) => {
                 if (code === 0) {
                     resolve();
                 } else {
-                    reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
+                    reject(new Error(`FFmpeg exited with code ${code}\n${stderr}`));
                 }
             });
         });
 
-        // Read and send the output file
+        // Read output file
         const videoBuffer = await readFile(outputFile);
 
         res.setHeader('Content-Type', 'video/mp4');
@@ -89,7 +95,7 @@ app.post('/render', async (req, res) => {
         }
 
     } catch (error) {
-        console.error('Render error:', error.message);
+        console.error('Error:', error.message);
         res.status(500).send(error.message);
 
         // Cleanup on error
@@ -104,5 +110,5 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`FFmpeg server listening on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
