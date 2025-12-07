@@ -1,7 +1,7 @@
 import express from 'express';
 import { spawn } from 'child_process';
 import fetch from 'node-fetch';
-import { writeFile, unlink } from 'fs/promises';
+import { writeFile, unlink, readFile } from 'fs/promises';
 import { randomBytes } from 'crypto';
 
 const app = express();
@@ -77,7 +77,6 @@ app.post('/render', async (req, res) => {
         });
 
         // Read and send the output file
-        const { readFile } = await import('fs/promises');
         const videoBuffer = await readFile(outputFile);
 
         res.setHeader('Content-Type', 'video/mp4');
