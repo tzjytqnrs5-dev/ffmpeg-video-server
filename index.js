@@ -1,112 +1,109 @@
-const express = require('express');
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegInstaller = require('ffmpeg-static');
-const fetch = require('node-fetch');
-const fs = require('fs');
-const path = require('path');
-const cors = require('cors');
-const { promisify } = require('util');
-const pipeline = promisify(require('stream').pipeline);
+import express from 'express';
+import { spawn } from 'child_process';
+import fetch from 'node-fetch';
+import { writeFile, unlink } from 'fs/promises';
+import { randomBytes } from 'crypto';
 
 const app = express();
-app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-ffmpeg.setFfmpegPath(ffmpegInstaller);
-
-async function downloadFile(url, dest) {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
-    await pipeline(response.body, fs.createWriteStream(dest));
-    return dest;
-}
-
-app.get('/', (req, res) => res.send('Generic FFmpeg Runner Active'));
+const PORT = process.env.PORT || 3000;
 
 app.post('/render', async (req, res) => {
-    const workDir = path.join(__dirname, 'temp-' + Date.now());
-    
+    const { inputs, resources = [], filterComplex, outputOptions = [] } = req.body;
+
+    if (!inputs || !filterComplex) {
+        return res.status(400).send('Missing inputs or filterComplex');
+    }
+
+    const outputFile = `/tmp/output_${randomBytes(8).toString('hex')}.mp4`;
+    const downloadedFiles = [];
+
     try {
-        console.log('Received generic render request');
-        const { inputs, resources, filterComplex, outputOptions } = req.body;
-
-        if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
-
-        // 1. Download Resources (Fonts, etc.) to /tmp/
-        if (resources && Array.isArray(resources)) {
-            console.log(`Downloading ${resources.length} resources to /tmp/...`);
-            for (const r of resources) {
-                const fileName = r.name || path.basename(r.url);
-                const dest = `/tmp/${fileName}`;
-                await downloadFile(r.url, dest);
-                console.log(`Downloaded resource: ${dest}`);
+        // Download resources (fonts) to /tmp/
+        for (const resource of resources) {
+            const localPath = `/tmp/${resource.name}`;
+            console.log(`Downloading resource from ${resource.url} to ${localPath}`);
+            
+            const response = await fetch(resource.url);
+            if (!response.ok) {
+                throw new Error(`Failed to download ${resource.name}: ${response.statusText}`);
             }
+            
+            const buffer = await response.arrayBuffer();
+            await writeFile(localPath, Buffer.from(buffer));
+            downloadedFiles.push(localPath);
+            console.log(`Downloaded resource: ${localPath}`);
         }
 
-        // 2. Download Inputs (Images, Video, Audio)
-        const inputPaths = [];
-        if (inputs && Array.isArray(inputs)) {
-            console.log(`Downloading ${inputs.length} inputs...`);
-            for (let i = 0; i < inputs.length; i++) {
-                const inp = inputs[i];
-                const dest = path.join(workDir, `input-${i}${path.extname(inp.url) || '.tmp'}`);
-                await downloadFile(inp.url, dest);
-                inputPaths.push({ path: dest, options: inp.options || [] });
+        // Build FFmpeg command
+        const args = [];
+
+        // Add inputs
+        for (const input of inputs) {
+            if (input.options) {
+                args.push(...input.options);
             }
+            args.push('-i', input.url);
         }
 
-        console.log('Starting FFmpeg...');
-        const outputPath = path.join(workDir, 'output.mp4');
+        // Add filter_complex
+        args.push('-filter_complex', filterComplex);
 
+        // Add output options
+        args.push(...outputOptions);
+
+        // Output file
+        args.push(outputFile);
+
+        console.log('FFmpeg command:', 'ffmpeg', args.join(' '));
+
+        // Execute FFmpeg
         await new Promise((resolve, reject) => {
-            const command = ffmpeg();
+            const ffmpeg = spawn('ffmpeg', args);
+            let stderr = '';
 
-            // Add Inputs
-            inputPaths.forEach(inp => {
-                command.addInput(inp.path);
-                if (inp.options.length > 0) command.inputOptions(inp.options);
+            ffmpeg.stderr.on('data', (data) => {
+                stderr += data.toString();
             });
 
-            // Apply Complex Filter
-            if (filterComplex) {
-                command.complexFilter(filterComplex);
-            }
-
-            // Apply Output Options
-            if (outputOptions) {
-                command.outputOptions(outputOptions);
-            }
-
-            command
-                .save(outputPath)
-                .on('end', () => {
-                    console.log('Render finished');
+            ffmpeg.on('close', (code) => {
+                if (code === 0) {
                     resolve();
-                })
-                .on('error', (err) => {
-                    console.error('FFmpeg error:', err);
-                    reject(err);
-                });
+                } else {
+                    reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
+                }
+            });
         });
 
-        console.log('Sending response...');
+        // Read and send the output file
+        const { readFile } = await import('fs/promises');
+        const videoBuffer = await readFile(outputFile);
+
         res.setHeader('Content-Type', 'video/mp4');
-        const readStream = fs.createReadStream(outputPath);
-        readStream.pipe(res);
-        readStream.on('close', () => cleanup(workDir));
+        res.send(videoBuffer);
+
+        // Cleanup
+        await unlink(outputFile);
+        for (const file of downloadedFiles) {
+            await unlink(file).catch(() => {});
+        }
 
     } catch (error) {
-        console.error('Generic Render Error:', error);
-        if (!res.headersSent) res.status(500).send(error.message);
-        cleanup(workDir);
+        console.error('Render error:', error.message);
+        res.status(500).send(error.message);
+
+        // Cleanup on error
+        for (const file of downloadedFiles) {
+            await unlink(file).catch(() => {});
+        }
     }
 });
 
-function cleanup(dir) {
-    try {
-        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-    } catch (e) { console.error('Cleanup error:', e); }
-}
+app.get('/health', (req, res) => {
+    res.send('OK');
+});
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Generic Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`FFmpeg server listening on port ${PORT}`);
+});
