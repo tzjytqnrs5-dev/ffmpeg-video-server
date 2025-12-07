@@ -10,7 +10,7 @@ const pipeline = promisify(require('stream').pipeline);
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Increase limit for complex payloads
+app.use(express.json({ limit: '50mb' }));
 
 ffmpeg.setFfmpegPath(ffmpegInstaller);
 
@@ -32,16 +32,14 @@ app.post('/render', async (req, res) => {
 
         if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
 
-        // 1. Download Resources (Fonts, Watermarks, etc.)
-        // We map names like 'font.ttf' to actual paths
-        const resourceMap = {};
+        // 1. Download Resources (Fonts, etc.) to /tmp/
         if (resources && Array.isArray(resources)) {
-            console.log(`Downloading ${resources.length} resources...`);
+            console.log(`Downloading ${resources.length} resources to /tmp/...`);
             for (const r of resources) {
                 const fileName = r.name || path.basename(r.url);
-                const dest = path.join(workDir, fileName);
+                const dest = `/tmp/${fileName}`;
                 await downloadFile(r.url, dest);
-                resourceMap[fileName] = dest;
+                console.log(`Downloaded resource: ${dest}`);
             }
         }
 
@@ -57,17 +55,6 @@ app.post('/render', async (req, res) => {
             }
         }
 
-        // 3. Prepare Filter String
-        // Replace placeholders like {{font.ttf}} with actual absolute paths
-        let finalFilter = filterComplex;
-        Object.entries(resourceMap).forEach(([name, localPath]) => {
-            // Escape backslashes for FFmpeg filter syntax if on Windows, but Railway is Linux
-            // FFmpeg requires escaping ':' in paths in filter strings sometimes
-            // Standard Linux path should be fine, but let's ensure.
-            const escapedPath = localPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-            finalFilter = finalFilter.replace(new RegExp(`{{${name}}}`, 'g'), escapedPath);
-        });
-
         console.log('Starting FFmpeg...');
         const outputPath = path.join(workDir, 'output.mp4');
 
@@ -81,8 +68,8 @@ app.post('/render', async (req, res) => {
             });
 
             // Apply Complex Filter
-            if (finalFilter) {
-                command.complexFilter(finalFilter);
+            if (filterComplex) {
+                command.complexFilter(filterComplex);
             }
 
             // Apply Output Options
