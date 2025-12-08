@@ -184,4 +184,5 @@ app.post('/render', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`FFmpeg renderer listening on port ${PORT}`));
+const HOST = '0.0.0.0'; 
+app.listen(PORT, HOST, () => console.log(`FFmpeg renderer listening on ${HOST}:${PORT}`)); // CRITICAL FIX: Explicitly bind to 0.0.0.0
