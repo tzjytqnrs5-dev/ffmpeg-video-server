@@ -1,6 +1,7 @@
 [phases.setup]
-# Changed 'ffmpeg-full' to 'ffmpeg' and added 'libx264' and 'libfdk_aac' for robust encoding.
-nixPkgs = ['nodejs', 'ffmpeg', 'libx264', 'libfdk_aac'] 
+# CRITICAL FIX: Removed 'libfdk_aac' as it caused the build failure.
+# We keep the essential packages: 'nodejs', 'ffmpeg', and 'libx264'.
+nixPkgs = ['nodejs', 'ffmpeg', 'libx264'] 
 
 [phases.install]
 cmds = ['npm install']
