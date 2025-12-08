@@ -91,7 +91,7 @@ app.post('/render', async (req, res) => {
 
     let processedFilter = filterComplex;
     for (const [name, path] of Object.entries(resourcePaths)) {
-      processedFilter = processedFilter.replace(new RegExp(`fontfile=${name}`, 'g'), `fontfile=${path.replace(/\\/g, '/')}`);
+      processedFilter = processedFilter.replace(new RegExp(`fontfile=['"]?${name}['"]?`, 'g'), `fontfile=${path.replace(/\\/g, '/')}`);
     }
 
     ffmpegArgs.push('-filter_complex', processedFilter);
