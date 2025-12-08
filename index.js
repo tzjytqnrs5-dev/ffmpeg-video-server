@@ -28,7 +28,7 @@ app.post('/render', async (req, res) => {
   let tempDir = null;
 
   try {
-    const { inputs, resources = [], filterComplex, outputOptions = [] } = req.body;
+    const { inputs, resources = [], filterComplex, outputOptions = [], totalFrames } = req.body;
 
     if (!inputs || !Array.isArray(inputs)) {
       return res.status(400).json({ error: 'Invalid inputs array' });
@@ -81,7 +81,6 @@ app.post('/render', async (req, res) => {
     // Replace resource names in filterComplex with absolute paths
     let processedFilter = filterComplex;
     for (const [name, path] of Object.entries(resourcePaths)) {
-      // Replace fontfile references
       processedFilter = processedFilter.replace(
         new RegExp(`fontfile=${name}`, 'g'),
         `fontfile=${path.replace(/\\/g, '/')}`
@@ -105,7 +104,6 @@ app.post('/render', async (req, res) => {
     // Run FFmpeg
     await new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-      
       let stderr = '';
 
       ffmpeg.stderr.on('data', (data) => {
@@ -113,14 +111,24 @@ app.post('/render', async (req, res) => {
         const str = data.toString();
         const match = str.match(/frame=\s*(\d+)\s*fps=\s*([\d\.]+)/);
         if (match) {
-          const [_, frame, fps] = match;
+          const [_, frameStr, fpsStr] = match;
+          const frame = parseInt(frameStr, 10);
+          const fps = parseFloat(fpsStr);
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-          process.stdout.write(`\rFrame: ${frame} | FPS: ${fps} | Elapsed: ${elapsed}s`);
+
+          let remainingText = '';
+          if (totalFrames) {
+            const remaining = ((totalFrames - frame) / fps).toFixed(1);
+            remainingText = ` | Remaining: ${remaining}s`;
+          }
+
+          process.stdout.write(`\rFrame: ${frame} | FPS: ${fps} | Elapsed: ${elapsed}s${remainingText}          `);
         }
       });
 
       ffmpeg.on('close', (code) => {
-        console.log(`\n[${uniqueId}] FFmpeg exited with code ${code}`);
+        process.stdout.write('\n');
+        console.log(`[${uniqueId}] FFmpeg exited with code ${code}`);
         if (code !== 0) {
           reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
         } else {
@@ -150,7 +158,6 @@ app.post('/render', async (req, res) => {
       message: error.message
     };
 
-    // Add specific error types
     if (error.message.includes('Filter not found')) {
       errorResponse.error = 'Font or FFmpeg error';
       errorResponse.hint = 'FFmpeg may be missing drawtext filter or fonts not loaded';
@@ -170,7 +177,3 @@ app.post('/render', async (req, res) => {
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`FFmpeg video server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-});
