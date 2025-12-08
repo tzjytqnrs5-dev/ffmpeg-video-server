@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
-import { randomBytes } from 'crypto';
+import { randomBytes } from 'node:crypto'; // <-- CRITICAL FIX: Use node: prefix
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -24,16 +24,11 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-// FIXED worker-test route
+// Worker test route remains but is simplified to avoid complex logic
 app.get('/worker-test', (req, res) => {
-  console.log("Worker test request received");
-  const worker = spawn('node', ['worker.js']);
-  worker.stdout.on('data', data => console.log(`worker stdout: ${data}`));
-  worker.stderr.on('data', data => console.log(`worker stderr: ${data}`));
-  worker.on('close', code => {
-    console.log(`Worker exited with code ${code}`);
-    res.send(`Worker finished with code ${code}`);
-  });
+  console.log("Worker test request received (Inactive for main jobs)");
+  // This is a minimal test; the actual worker.js file is now empty/simplified.
+  res.send("Worker test received. Main rendering uses /render.");
 });
 
 // Main render endpoint (Robust resource handling and command building)
@@ -41,6 +36,7 @@ app.post('/render', async (req, res) => {
   console.log(`[${new Date().toISOString()}] Incoming render request from ${req.ip}`);
   const startTime = Date.now();
   let tempDir = null;
+  let uniqueId = randomBytes(8).toString('hex'); // Initialize here for use in finally block
 
   try {
     const { inputs, resources = [], filterComplex, outputOptions = [], totalFrames } = req.body;
@@ -51,7 +47,6 @@ app.post('/render', async (req, res) => {
       return res.status(400).json({ error: 'Missing filterComplex' });
     }
 
-    const uniqueId = randomBytes(8).toString('hex');
     tempDir = join(tmpdir(), `ffmpeg-${uniqueId}`);
     await fs.mkdir(tempDir, { recursive: true });
 
@@ -60,29 +55,20 @@ app.post('/render', async (req, res) => {
     // 1. Load resources (FONTS)
     const resourcePaths = {};
     for (const resource of resources) {
-      // NOTE: We assume resources are fonts based on client code
-      const resourceName = resource.name; // e.g., 'HeadlineFont.ttf'
+      const resourceName = resource.name; 
       const resourceUrl = resource.url; 
       try {
-        // Option A: Check for pre-cached local fonts (Good, but client should use full path)
-        const localFontPath = join(__dirname, 'fonts', resourceName);
-        try {
-          await fs.access(localFontPath);
-          resourcePaths[resourceName] = localFontPath;
-          console.log(`[${uniqueId}] Using pre-cached local font: ${resourceName}`);
-        } catch {
-          // Option B: Download the font from the signed URL
-          console.log(`[${uniqueId}] Downloading resource: ${resourceName}`);
-          const response = await fetch(resourceUrl, { timeout: 30000 });
-          if (!response.ok) throw new Error(`Failed to fetch ${resourceName}`);
-          const buffer = await response.buffer();
-          
-          // CRITICAL FIX: Download fonts directly into the temporary directory
-          const resourcePath = join(tempDir, resourceName);
-          await fs.writeFile(resourcePath, buffer);
-          resourcePaths[resourceName] = resourcePath; // Store the *temp* path
-          console.log(`[${uniqueId}] Saved resource: ${resourceName} to ${resourcePath}`);
-        }
+        console.log(`[${uniqueId}] Downloading resource: ${resourceName}`);
+        const response = await fetch(resourceUrl, { timeout: 30000 });
+        if (!response.ok) throw new Error(`Failed to fetch ${resourceName}`);
+        const buffer = await response.buffer();
+        
+        // Download fonts directly into the temporary directory
+        const resourcePath = join(tempDir, resourceName);
+        await fs.writeFile(resourcePath, buffer);
+        resourcePaths[resourceName] = resourcePath; // Store the *temp* path
+        console.log(`[${uniqueId}] Saved resource: ${resourceName} to ${resourcePath}`);
+
       } catch (err) {
         console.error(`[${uniqueId}] Resource loading failed for ${resourceName}:`, err);
         throw new Error(`Failed to load resource ${resourceName}`);
@@ -91,6 +77,8 @@ app.post('/render', async (req, res) => {
 
     // 2. Build FFmpeg command
     const ffmpegArgs = [];
+    
+    // Add input files and their options
     for (const input of inputs) {
       if (input.options && Array.isArray(input.options)) ffmpegArgs.push(...input.options);
       ffmpegArgs.push('-i', input.url);
@@ -99,13 +87,9 @@ app.post('/render', async (req, res) => {
     // CRITICAL FIX: Replace resource names in filterComplex with their absolute, temp file paths.
     let processedFilter = filterComplex;
     for (const [name, path] of Object.entries(resourcePaths)) {
-      // Create a regex that searches for the font filename, with or without quotes
-      // The client sends: fontfile=MyFont.ttf:
       const regex = new RegExp(`fontfile=['"]?${name}['"]?`, 'g');
       
-      // The replacement must escape backslashes for FFmpeg and use the correct path structure
-      // Use the 'path' which is already correctly formatted for the OS
-      // We explicitly escape the path just in case, but rely on join/replace above
+      // Escape path for FFmpeg, particularly backslashes on Windows and colons for filter compatibility
       const escapedPath = path.replace(/\\/g, '/').replace(/:/g, '\\:');
       
       processedFilter = processedFilter.replace(regex, `fontfile=${escapedPath}`);
@@ -114,38 +98,60 @@ app.post('/render', async (req, res) => {
 
     ffmpegArgs.push('-filter_complex', processedFilter);
     
-    // Add audio track mapping to outputOptions if it's not already there
-    // This is a safety measure to ensure the music input is mapped correctly.
-    if (!outputOptions.some(opt => opt.startsWith('-map') && opt.includes(':a'))) {
-         // Assuming music is the last input URL
-         const audioInputIndex = inputs.length - 1; 
-         ffmpegArgs.push('-map', `${audioInputIndex}:a`);
-    }
-
     if (outputOptions && Array.isArray(outputOptions)) ffmpegArgs.push(...outputOptions);
 
     const outputPath = join(tempDir, 'output.mp4');
     ffmpegArgs.push(outputPath);
 
     console.log(`[${uniqueId}] FFmpeg command (simplified): ffmpeg -i ... -filter_complex ... ${outputPath}`);
-    // console.log(`[${uniqueId}] Full Args: ${ffmpegArgs.join(' ')}`); // Uncomment for detailed debug
 
     // 3. Run FFmpeg
     await new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', ffmpegArgs);
       let stderr = '';
+      const totalStart = Date.now();
+      let lastFrame = 0;
+      let lastTime = Date.now();
 
-      // ... (Rest of the FFmpeg execution/logging block remains the same) ...
       ffmpeg.stderr.on('data', data => {
-        stderr += data.toString();
-        // ... progress logging ...
+        const dataStr = data.toString();
+        stderr += dataStr;
+
+        // Progress logging (adapted from original code to be more robust)
+        if (dataStr.includes('frame=')) {
+          const frameMatch = dataStr.match(/frame=\s*(\d+)/);
+          const timeMatch = dataStr.match(/time=\s*(\d+:\d+:\d+\.\d+)/);
+          const fpsMatch = dataStr.match(/fps=\s*(\d+\.?\d*)/);
+
+          if (frameMatch && timeMatch && fpsMatch) {
+            const frame = parseInt(frameMatch[1], 10);
+            const fps = parseFloat(fpsMatch[1]);
+            const elapsed = ((Date.now() - totalStart) / 1000).toFixed(1);
+
+            let remainingText = '';
+            if (totalFrames && totalFrames > 0) {
+              const framesRemaining = totalFrames - frame;
+              // Simple heuristic estimate
+              const frameDelta = frame - lastFrame;
+              const timeDelta = Date.now() - lastTime;
+
+              if (frameDelta > 100 && timeDelta > 1000) { // Update rate limit
+                 const avgFps = frameDelta / (timeDelta / 1000);
+                 const remainingTimeSec = framesRemaining / avgFps;
+                 remainingText = ` | Remaining: ${remainingTimeSec.toFixed(1)}s`;
+                 lastFrame = frame;
+                 lastTime = Date.now();
+              }
+            }
+            process.stdout.write(`\r[${uniqueId}] Frame: ${frame} | FPS: ${fps} | Elapsed: ${elapsed}s${remainingText}   `);
+          }
+        }
       });
 
       ffmpeg.on('close', code => {
         process.stdout.write('\n');
         console.log(`[${uniqueId}] FFmpeg exited with code ${code}`);
         if (code !== 0) {
-          // Send more detail on failure
           const lastErr = stderr.slice(-1500);
           console.error(`[${uniqueId}] FFmpeg Last 1500 chars of stderr: ${lastErr}`);
           reject(new Error(`ffmpeg exited with code ${code}. Error snippet: ${lastErr.substring(0, 500)}`));
@@ -164,7 +170,7 @@ app.post('/render', async (req, res) => {
     res.send(videoBuffer);
 
   } catch (error) {
-    console.error('Render error:', error);
+    console.error(`[${uniqueId}] Render error:`, error);
     res.status(500).json({ error: 'Render failed', message: error.message, detail: error.stack });
   } finally {
     if (tempDir) {
@@ -172,7 +178,7 @@ app.post('/render', async (req, res) => {
         await fs.rm(tempDir, { recursive: true, force: true });
         console.log(`[${uniqueId}] Cleaned up temp directory: ${tempDir}`);
       } catch (cleanupErr) {
-        console.error('Cleanup error:', cleanupErr);
+        console.error(`[${uniqueId}] Cleanup error:`, cleanupErr);
       }
     }
   }
