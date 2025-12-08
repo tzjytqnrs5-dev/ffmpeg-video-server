@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Health check
+// Health checks
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'ffmpeg-video-renderer' });
 });
@@ -24,35 +24,29 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-// Test worker endpoint
+// FIXED worker-test route
 app.get('/worker-test', (req, res) => {
   console.log("Worker test request received");
-
   const worker = spawn('node', ['worker.js']);
-
   worker.stdout.on('data', data => console.log(`worker stdout: ${data}`));
   worker.stderr.on('data', data => console.log(`worker stderr: ${data}`));
-
   worker.on('close', code => {
     console.log(`Worker exited with code ${code}`);
     res.send(`Worker finished with code ${code}`);
   });
 });
 
-// Main render endpoint
+// Main render endpoint (ALL template strings fixed)
 app.post('/render', async (req, res) => {
   console.log(`[${new Date().toISOString()}] Incoming render request from ${req.ip}`);
-  
   const startTime = Date.now();
   let tempDir = null;
 
   try {
     const { inputs, resources = [], filterComplex, outputOptions = [], totalFrames } = req.body;
-
     if (!inputs || !Array.isArray(inputs)) {
       return res.status(400).json({ error: 'Invalid inputs array' });
     }
-
     if (!filterComplex) {
       return res.status(400).json({ error: 'Missing filterComplex' });
     }
@@ -63,7 +57,7 @@ app.post('/render', async (req, res) => {
 
     console.log(`[${uniqueId}] Starting render with ${inputs.length} inputs, ${resources.length} resources`);
 
-    // Load resources (fonts/images)
+    // Load resources
     const resourcePaths = {};
     for (const resource of resources) {
       try {
@@ -97,10 +91,7 @@ app.post('/render', async (req, res) => {
 
     let processedFilter = filterComplex;
     for (const [name, path] of Object.entries(resourcePaths)) {
-      processedFilter = processedFilter.replace(
-        new RegExp(`fontfile=${name}`, 'g'),
-        `fontfile=${path.replace(/\\/g, '/')}`
-      );
+      processedFilter = processedFilter.replace(new RegExp(`fontfile=${name}`, 'g'), `fontfile=${path.replace(/\\/g, '/')}`);
     }
 
     ffmpegArgs.push('-filter_complex', processedFilter);
@@ -130,7 +121,7 @@ app.post('/render', async (req, res) => {
             const remaining = ((totalFrames - frame) / fps).toFixed(1);
             remainingText = ` | Remaining: ${remaining}s`;
           }
-          process.stdout.write(`\rFrame: ${frame} | FPS: ${fps} | Elapsed: ${elapsed}s${remainingText}          `);
+          process.stdout.write(`\rFrame: ${frame} | FPS: ${fps} | Elapsed: ${elapsed}s${remainingText}   `);
         }
       });
 
