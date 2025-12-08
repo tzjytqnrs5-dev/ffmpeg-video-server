@@ -2,9 +2,13 @@ import express from 'express';
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import { randomBytes } from 'crypto';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -45,25 +49,38 @@ app.post('/render', async (req, res) => {
 
     console.log(`[${uniqueId}] Starting render with ${inputs.length} inputs, ${resources.length} resources`);
 
-    // Download and save resources (fonts, etc)
+    // Handle resources (fonts) - use local files instead of downloading
     const resourcePaths = {};
     for (const resource of resources) {
       try {
-        console.log(`[${uniqueId}] Downloading resource: ${resource.name}`);
-        const response = await fetch(resource.url, { timeout: 30000 });
+        console.log(`[${uniqueId}] Loading resource: ${resource.name}`);
         
-        if (!response.ok) {
-          throw new Error(`Failed to fetch ${resource.name}: ${response.status} ${response.statusText}`);
-        }
+        // Check if it's a local font file
+        const localFontPath = join(__dirname, 'fonts', resource.name);
+        
+        try {
+          // Try to access the local font file
+          await fs.access(localFontPath);
+          resourcePaths[resource.name] = localFontPath;
+          console.log(`[${uniqueId}] Using local font: ${resource.name}`);
+        } catch {
+          // If local file doesn't exist, fall back to downloading (for non-font resources)
+          console.log(`[${uniqueId}] Downloading resource: ${resource.name}`);
+          const response = await fetch(resource.url, { timeout: 30000 });
+          
+          if (!response.ok) {
+            throw new Error(`Failed to fetch ${resource.name}: ${response.status} ${response.statusText}`);
+          }
 
-        const buffer = await response.buffer();
-        const resourcePath = join(tempDir, resource.name);
-        await fs.writeFile(resourcePath, buffer);
-        resourcePaths[resource.name] = resourcePath;
-        console.log(`[${uniqueId}] Saved resource: ${resource.name} (${buffer.length} bytes)`);
+          const buffer = await response.buffer();
+          const resourcePath = join(tempDir, resource.name);
+          await fs.writeFile(resourcePath, buffer);
+          resourcePaths[resource.name] = resourcePath;
+          console.log(`[${uniqueId}] Saved resource: ${resource.name} (${buffer.length} bytes)`);
+        }
       } catch (err) {
-        console.error(`[${uniqueId}] Resource download failed:`, err);
-        throw new Error(`Failed to download resource ${resource.name}: ${err.message}`);
+        console.error(`[${uniqueId}] Resource loading failed:`, err);
+        throw new Error(`Failed to load resource ${resource.name}: ${err.message}`);
       }
     }
 
@@ -177,3 +194,6 @@ app.post('/render', async (req, res) => {
   }
 });
 
+app.listen(PORT, () => {
+  console.log(`FFmpeg renderer listening on port ${PORT}`);
+});
