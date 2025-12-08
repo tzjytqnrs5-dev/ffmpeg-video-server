@@ -110,9 +110,12 @@ app.post('/render', async (req, res) => {
 
       ffmpeg.stderr.on('data', (data) => {
         stderr += data.toString();
-        // Log progress
-        if (data.toString().includes('frame=')) {
-          process.stdout.write('.');
+        const str = data.toString();
+        const match = str.match(/frame=\s*(\d+)\s*fps=\s*([\d\.]+)/);
+        if (match) {
+          const [_, frame, fps] = match;
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          process.stdout.write(`\rFrame: ${frame} | FPS: ${fps} | Elapsed: ${elapsed}s`);
         }
       });
 
