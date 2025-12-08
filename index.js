@@ -22,6 +22,8 @@ app.get('/health', (req, res) => {
 
 // Main render endpoint
 app.post('/render', async (req, res) => {
+  console.log(`[${new Date().toISOString()}] Incoming render request from ${req.ip}`);
+  
   const startTime = Date.now();
   let tempDir = null;
 
