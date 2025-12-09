@@ -3,24 +3,22 @@
   "version": "1.0.0",
   "description": "Video rendering service for Sircus Studio.",
   "main": "server.js",
+  "type": "module",
   "scripts": {
-    // FIX: This must use the PORT environment variable provided by Railway.
-    // If your main server file is named 'server.js' and uses Node/Express/etc.
-    "start": "node server.js", 
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    // Add your necessary Node.js dependencies here (e.g., express, ffmpeg, AWS SDK, etc.)
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "fluent-ffmpeg": "^2.1.2",
-    "aws-sdk": "^2.1557.0"
+    "aws-sdk": "^2.1557.0",
+    "path": "^0.12.7"
   },
   "devDependencies": {
-    // Add development dependencies here
+    
   },
   "engines": {
-    // Explicitly set Node version to prevent Nixpacks guessing the wrong one
-    "node": "20" 
+    "node": "20"
   }
 }
