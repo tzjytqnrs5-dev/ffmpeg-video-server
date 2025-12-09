@@ -8,16 +8,17 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-const port = process.env.PORT || 3000;
+// Railway provides the PORT, default to 3000 for local testing
+const port = process.env.PORT || 3000; 
 
 // Middleware to parse JSON body
 app.use(express.json());
 
 // --- AWS S3 Configuration ---
-const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME; // Your 'videobuckettippy'
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME; // e.g., 'videobuckettippy'
 const AWS_REGION = process.env.AWS_REGION || 'us-east-2'; // Verified as 'us-east-2'
 
-// Initialize S3 client (using env vars AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY)
+// Initialize S3 client (uses env vars AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY)
 const s3 = new AWS.S3({
     region: AWS_REGION
 });
@@ -35,7 +36,6 @@ async function uploadToStorage(filePath, s3Key) {
         Key: s3Key,
         Body: fileStream,
         ContentType: 'video/mp4',
-        // Now that Object Ownership is 'Object writer', ACL: 'public-read' should work
         ACL: 'public-read' 
     };
 
@@ -46,6 +46,8 @@ async function uploadToStorage(filePath, s3Key) {
         return s3Response.Location;
     } catch (error) {
         console.error(`[Storage] S3 upload failed:`, error.message);
+        // Clean up temp file before throwing the error if possible
+        try { fs.unlinkSync(filePath); } catch (cleanupError) { /* ignore */ }
         throw new Error(`S3 upload failed: ${error.message}`);
     }
 }
@@ -55,25 +57,23 @@ async function uploadToStorage(filePath, s3Key) {
 app.post('/render', async (req, res) => {
     const { topic, script, title, backgroundVideoUrl, videoId } = req.body;
     
-    // Use a unique ID for the FFmpeg process and S3 path
+    // Use a unique ID for the FFmpeg process
     const renderId = uuidv4();
     
-    // Temp path for rendered video
+    // Temp path for rendered video (using /tmp as required for container storage)
     const outputFilename = `output_${renderId}.mp4`;
     const outputPath = path.join('/tmp', outputFilename); 
     
     console.log(`[${renderId}] Render request received for topic: "${topic}"`);
 
     // --- 1. Define FFmpeg Command ---
-    // NOTE: This is a placeholder command. You will need to customize the 
-    // exact FFmpeg filters, text overlays, and audio settings for your template.
-    // The key here is using the inputs and generating an output file.
+    // NOTE: Replace the fontfile and complex filters with your actual requirements
     const ffmpegCommand = `
         ffmpeg -y -i "${backgroundVideoUrl}" -t 30 
         -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${script}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=48:fontcolor=white:box=1:boxcolor=0x000000AA"
         -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p 
         ${outputPath}
-    `.replace(/\s+/g, ' ').trim(); // Clean up command for execution
+    `.replace(/\s+/g, ' ').trim();
 
     try {
         // --- 2. Execute FFmpeg ---
@@ -99,8 +99,7 @@ app.post('/render', async (req, res) => {
         fs.unlinkSync(outputPath);
         console.log(`[${renderId}] Cleaned up temp file: ${outputPath}`);
 
-        // --- 5. SUCCESS RESPONSE (The FIX!) ---
-        // This sends the URL back to the waiting Base44 Deno function.
+        // --- 5. SUCCESS RESPONSE (Sends URL back to Base44) ---
         return res.json({
             success: true,
             videoUrl: finalVideoUrl, 
@@ -111,6 +110,9 @@ app.post('/render', async (req, res) => {
     } catch (e) {
         console.error(`[${renderId}] Pipeline error:`, e.message);
         
+        // Clean up temp file on failure
+        try { fs.unlinkSync(outputPath); } catch (cleanupError) { /* ignore */ }
+
         // Return error response
         return res.status(500).json({ 
             success: false, 
@@ -121,12 +123,21 @@ app.post('/render', async (req, res) => {
 });
 
 
-// --- Health Check / Root ---
+// 🚀 HEALTH CHECK ENDPOINT (The fix for the "service unavailable" error)
+// Railway's healthcheck is looking for this path and a 200 response.
+app.get('/health', (req, res) => {
+    res.status(200).send('OK'); 
+});
+
+
+// --- Root Endpoint ---
 app.get('/', (req, res) => {
     res.send('Video Rendering Service Running');
 });
 
-// --- Start Server ---
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+// --- Start Server (The binding fix) ---
+// We explicitly bind to '::' (IPv6 wildcard) to ensure it listens on all interfaces,
+// which is the most robust way to start a server in a container environment like Railway.
+app.listen(port, '::', () => { 
+    console.log(`Server running on port ${port} and binding to all interfaces.`);
 });
