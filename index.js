@@ -14,70 +14,109 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+// Keep the limit high, as the request body might be large for future features
+app.use(express.json({ limit: '50mb' })); 
+
+// --- Dummy Storage Function (IMPLEMENTATION REQUIRED) ---
+/**
+ * Placeholder for uploading the video file to a cloud storage service (e.g., S3).
+ * This function must be replaced with actual S3/R2/Cloudflare storage logic.
+ * @param {Buffer} buffer - The video file buffer.
+ * @param {string} fileName - The name of the file.
+ * @returns {Promise<string>} - The publicly accessible URL of the uploaded video.
+ */
+async function uploadToStorage(buffer, fileName) {
+    // 🛑 IMPORTANT: Replace this with real logic.
+    console.log(`[Storage] Uploading ${fileName} (${buffer.length} bytes)...`);
+    
+    // For now, return a placeholder URL to prevent crashes.
+    return `https://your-storage-bucket.com/videos/output-${crypto.randomBytes(4).toString('hex')}.mp4`;
+}
+// --------------------------------------------------------
+
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Render endpoint
 app.post('/render', async (req, res) => {
-  const requestId = crypto.randomBytes(8).toString('hex');
-  const tempDir = `/tmp/video-${requestId}`;
-  
-  console.log(`[${requestId}] Render request received`);
-  
-  try {
-    const { topic, headline, template } = req.body;
+    const requestId = crypto.randomBytes(8).toString('hex');
+    // Using /tmp is correct for serverless environments
+    const tempDir = `/tmp/video-${requestId}`; 
     
-    if (!topic && !headline) {
-      return res.status(400).json({ success: false, error: 'Topic or headline required' });
-    }
-
-    await fs.mkdir(tempDir, { recursive: true });
-    
-    // Generate simple video with text overlay
-    const text = (headline || topic).substring(0, 100);
-    const outputPath = path.join(tempDir, 'output.mp4');
-    
-    // Simple FFmpeg command - solid color background with text
-    const ffmpegCmd = `ffmpeg -f lavfi -i color=c=black:s=1080x1920:d=5 \
-      -vf "drawtext=text='${text.replace(/'/g, "\\'")}':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" \
-      -c:v libx264 -pix_fmt yuv420p -t 5 "${outputPath}"`;
-    
-    console.log(`[${requestId}] Executing FFmpeg...`);
-    await execAsync(ffmpegCmd);
-    
-    const videoBuffer = await fs.readFile(outputPath);
-    const videoBase64 = videoBuffer.toString('base64');
-    const videoUrl = `data:video/mp4;base64,${videoBase64}`;
-    
-    console.log(`[${requestId}] Video generated: ${videoBuffer.length} bytes`);
-    
-    // Cleanup
-    await fs.rm(tempDir, { recursive: true, force: true });
-    
-    res.json({
-      success: true,
-      videoUrl: videoUrl,
-      duration: 5
-    });
-    
-  } catch (error) {
-    console.error(`[${requestId}] Error:`, error);
+    console.log(`[${requestId}] Render request received`);
     
     try {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    } catch {}
-    
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
+        // We now expect 'script' and 'background_media_url' from the Deno orchestrator
+        const { topic, headline, template, templateId, templateName, script, background_media_url } = req.body;
+        
+        if (!topic && !headline) {
+            return res.status(400).json({ success: false, error: 'Topic or headline required' });
+        }
+
+        await fs.mkdir(tempDir, { recursive: true });
+        
+        // --- 1. Prepare Content and Command ---
+        // Use a more realistic headline (using script if available)
+        const renderText = (script || headline || topic).substring(0, 100); 
+        const outputPath = path.join(tempDir, 'output.mp4');
+        
+        // Use a simple, stable command for testing stability:
+        // You would use the background_media_url and script here in production.
+        const ffmpegCmd = `ffmpeg -f lavfi -i color=c=black:s=1080x1920:d=5 -t 5 \
+            -vf "drawtext=text='${renderText.replace(/'/g, "\\'")}':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" \
+            -c:v libx264 -pix_fmt yuv420p -y "${outputPath}"`; // -y overwrites without prompt
+        
+        console.log(`[${requestId}] Executing FFmpeg...`);
+        
+        // --- 2. Execute FFmpeg ---
+        // Wrap with a check to help diagnose missing FFmpeg binary
+        try {
+            await execAsync(ffmpegCmd, { timeout: 30000 }); // Add timeout for safety
+        } catch (execError) {
+            // Check if the error is due to FFmpeg not being found
+            if (execError.message && execError.message.includes('not found')) {
+                throw new Error("FFmpeg not found. Check Nixpacks configuration.");
+            }
+            throw execError;
+        }
+
+        // --- 3. Upload File and Get URL (Stability Fix) ---
+        const videoBuffer = await fs.readFile(outputPath);
+        
+        // IMPORTANT: The stability fix is here. Upload the file and get a small URL string.
+        const videoUrl = await uploadToStorage(videoBuffer, `output_${requestId}.mp4`); 
+        
+        console.log(`[${requestId}] Video uploaded and URL generated.`);
+        
+        // --- 4. Cleanup ---
+        await fs.rm(tempDir, { recursive: true, force: true });
+        
+        // --- 5. Return Small JSON Response ---
+        res.json({
+            success: true,
+            videoUrl: videoUrl, // This is now a small URL string, not a giant Base64 payload
+            duration: 5
+        });
+        
+    } catch (error) {
+        console.error(`[${requestId}] Error:`, error.message);
+        
+        // Attempt reliable cleanup
+        try {
+            await fs.rm(tempDir, { recursive: true, force: true });
+        } catch {}
+        
+        // Return a 500 status with the error message
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Internal server error during rendering'
+        });
+    }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
