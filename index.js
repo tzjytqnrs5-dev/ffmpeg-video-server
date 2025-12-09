@@ -2,16 +2,17 @@ import express from 'express';
 import cors from 'cors';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import fs from 'fs/promises';
+import fs from 'fs'; // <-- Use standard 'fs' for createReadStream
+import fsp from 'fs/promises'; // <-- Use 'fs/promises' for async operations
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
-import AWS from 'aws-sdk'; // <-- Required for S3 upload
+import AWS from 'aws-sdk'; 
 
 const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// --- S3 Configuration (Reads from Railway Secrets) ---
+// --- S3 Configuration ---
 const s3 = new AWS.S3({
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
@@ -19,32 +20,43 @@ const s3 = new AWS.S3({
 });
 const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME;
 
-// --- UPLOAD FUNCTION: Replaces the temporary placeholder ---
+// --- UPLOAD FUNCTION: Uses Streaming to avoid OOM crash ---
 /**
- * Uploads the video file to Amazon S3 and returns the public URL.
+ * Uploads the video file to Amazon S3 via streaming and returns the public URL.
+ * @param {string} filePath - The local path to the file to be uploaded.
+ * @param {string} fileName - The desired name of the file in S3.
+ * @returns {Promise<string>} - The public URL of the uploaded video.
  */
-async function uploadToStorage(buffer, fileName) {
+async function uploadToStorage(filePath, fileName) {
     if (!S3_BUCKET_NAME) {
         throw new Error("S3_BUCKET_NAME environment variable is not set.");
     }
     
-    // Create a unique S3 path for the video file
+    // Create a unique S3 path 
     const s3Path = `output/${crypto.randomBytes(4).toString('hex')}/${fileName}`;
     
+    // Create a readable stream from the local FFmpeg output file
+    const fileStream = fs.createReadStream(filePath); 
+
+    fileStream.on('error', (err) => {
+        console.error(`[Storage] File stream error: ${err.message}`);
+    });
+
     const params = {
         Bucket: S3_BUCKET_NAME,
         Key: s3Path,
-        Body: buffer,
+        Body: fileStream, // Pass the stream directly to S3
         ContentType: 'video/mp4',
-        ACL: 'public-read' // Makes the file publicly accessible
+        ACL: 'public-read' 
     };
 
     console.log(`[Storage] Uploading to S3 key: ${s3Path}`);
     
     try {
-        const data = await s3.upload(params).promise();
+        // .promise() handles the stream upload and wait for completion
+        const data = await s3.upload(params).promise(); 
         console.log(`[Storage] S3 Upload COMPLETE. Location: ${data.Location}`);
-        return data.Location; // The public URL
+        return data.Location; 
     } catch (error) {
         console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
         console.error('[S3 CRITICAL FAILURE] AWS Error:', error.message);
@@ -79,12 +91,12 @@ app.post('/render', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Topic or headline required' });
         }
 
-        await fs.mkdir(tempDir, { recursive: true });
+        await fsp.mkdir(tempDir, { recursive: true });
         
         const renderText = (script || headline || topic).substring(0, 100); 
         const outputPath = path.join(tempDir, 'output.mp4');
         
-        // Simple FFmpeg command: solid color background with text
+        // Simple FFmpeg command
         const ffmpegCmd = `ffmpeg -f lavfi -i color=c=black:s=1080x1920:d=5 -t 5 \
             -vf "drawtext=text='${renderText.replace(/'/g, "\\'")}':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" \
             -c:v libx264 -pix_fmt yuv420p -y "${outputPath}"`; 
@@ -100,14 +112,12 @@ app.post('/render', async (req, res) => {
             throw execError;
         }
 
-        // --- UPLOAD THE FILE ---
-        const videoBuffer = await fs.readFile(outputPath);
-        
-        // This is the line that performs the S3 upload
-        const videoUrl = await uploadToStorage(videoBuffer, `output_${requestId}.mp4`); 
+        // --- UPLOAD THE FILE VIA STREAM ---
+        // We pass the file path, NOT the buffer, to avoid RAM usage
+        const videoUrl = await uploadToStorage(outputPath, `output_${requestId}.mp4`); 
         
         // --- Cleanup ---
-        await fs.rm(tempDir, { recursive: true, force: true });
+        await fsp.rm(tempDir, { recursive: true, force: true });
         
         res.json({
             success: true,
@@ -120,7 +130,7 @@ app.post('/render', async (req, res) => {
         
         // Attempt reliable cleanup
         try {
-            await fs.rm(tempDir, { recursive: true, force: true });
+            await fsp.rm(tempDir, { recursive: true, force: true });
         } catch {}
         
         res.status(500).json({
