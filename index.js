@@ -1,145 +1,132 @@
-import express from 'express';
-import cors from 'cors';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs'; // <-- Use standard 'fs' for createReadStream
-import fsp from 'fs/promises'; // <-- Use 'fs/promises' for async operations
-import path from 'path';
-import { fileURLToPath } from 'url';
-import crypto from 'crypto';
-import AWS from 'aws-sdk'; 
+// index.js (Railway Backend Service)
 
-const execAsync = promisify(exec);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const express = require('express');
+const { exec } = require('child_process');
+const AWS = require('aws-sdk');
+const fs = require('fs');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 
-// --- S3 Configuration ---
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Middleware to parse JSON body
+app.use(express.json());
+
+// --- AWS S3 Configuration ---
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME; // Your 'videobuckettippy'
+const AWS_REGION = process.env.AWS_REGION || 'us-east-2'; // Verified as 'us-east-2'
+
+// Initialize S3 client (using env vars AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY)
 const s3 = new AWS.S3({
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    region: process.env.AWS_REGION
+    region: AWS_REGION
 });
-const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME;
 
-// --- UPLOAD FUNCTION: Uses Streaming to avoid OOM crash ---
-/**
- * Uploads the video file to Amazon S3 via streaming and returns the public URL.
- * @param {string} filePath - The local path to the file to be uploaded.
- * @param {string} fileName - The desired name of the file in S3.
- * @returns {Promise<string>} - The public URL of the uploaded video.
- */
-async function uploadToStorage(filePath, fileName) {
+// --- Utility Function to Upload to S3 ---
+async function uploadToStorage(filePath, s3Key) {
     if (!S3_BUCKET_NAME) {
-        throw new Error("S3_BUCKET_NAME environment variable is not set.");
+        throw new Error("S3_BUCKET_NAME is not set.");
     }
-    
-    // Create a unique S3 path 
-    const s3Path = `output/${crypto.randomBytes(4).toString('hex')}/${fileName}`;
-    
-    // Create a readable stream from the local FFmpeg output file
-    const fileStream = fs.createReadStream(filePath); 
 
-    fileStream.on('error', (err) => {
-        console.error(`[Storage] File stream error: ${err.message}`);
-    });
+    const fileStream = fs.createReadStream(filePath);
 
     const params = {
         Bucket: S3_BUCKET_NAME,
-        Key: s3Path,
-        Body: fileStream, // Pass the stream directly to S3
+        Key: s3Key,
+        Body: fileStream,
         ContentType: 'video/mp4',
+        // Now that Object Ownership is 'Object writer', ACL: 'public-read' should work
         ACL: 'public-read' 
     };
 
-    console.log(`[Storage] Uploading to S3 key: ${s3Path}`);
-    
     try {
-        // .promise() handles the stream upload and wait for completion
-        const data = await s3.upload(params).promise(); 
-        console.log(`[Storage] S3 Upload COMPLETE. Location: ${data.Location}`);
-        return data.Location; 
+        console.log(`[Storage] Uploading to S3 key: ${s3Key}`);
+        const s3Response = await s3.upload(params).promise();
+        console.log(`[Storage] S3 Upload COMPLETE. Location: ${s3Response.Location}`);
+        return s3Response.Location;
     } catch (error) {
-        console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
-        console.error('[S3 CRITICAL FAILURE] AWS Error:', error.message);
-        console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+        console.error(`[Storage] S3 upload failed:`, error.message);
         throw new Error(`S3 upload failed: ${error.message}`);
     }
 }
-// --------------------------------------------------------
 
-const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' })); 
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Render endpoint
+// --- Main Render Endpoint ---
 app.post('/render', async (req, res) => {
-    const requestId = crypto.randomBytes(8).toString('hex');
-    const tempDir = `/tmp/video-${requestId}`; 
+    const { topic, script, title, backgroundVideoUrl, videoId } = req.body;
     
-    console.log(`[${requestId}] Render request received`);
+    // Use a unique ID for the FFmpeg process and S3 path
+    const renderId = uuidv4();
     
+    // Temp path for rendered video
+    const outputFilename = `output_${renderId}.mp4`;
+    const outputPath = path.join('/tmp', outputFilename); 
+    
+    console.log(`[${renderId}] Render request received for topic: "${topic}"`);
+
+    // --- 1. Define FFmpeg Command ---
+    // NOTE: This is a placeholder command. You will need to customize the 
+    // exact FFmpeg filters, text overlays, and audio settings for your template.
+    // The key here is using the inputs and generating an output file.
+    const ffmpegCommand = `
+        ffmpeg -y -i "${backgroundVideoUrl}" -t 30 
+        -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${script}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=48:fontcolor=white:box=1:boxcolor=0x000000AA"
+        -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p 
+        ${outputPath}
+    `.replace(/\s+/g, ' ').trim(); // Clean up command for execution
+
     try {
-        const { topic, headline, script } = req.body;
+        // --- 2. Execute FFmpeg ---
+        console.log(`[${renderId}] Executing FFmpeg...`);
         
-        if (!topic && !headline) {
-            return res.status(400).json({ success: false, error: 'Topic or headline required' });
-        }
+        await new Promise((resolve, reject) => {
+            exec(ffmpegCommand, { maxBuffer: 1024 * 50000 }, (error, stdout, stderr) => {
+                if (error) {
+                    console.error(`[${renderId}] FFmpeg Execution Error:`, error);
+                    console.error(`[${renderId}] FFmpeg Stderr:`, stderr);
+                    return reject(new Error(`FFmpeg failed: ${error.message}`));
+                }
+                console.log(`[${renderId}] FFmpeg command completed successfully.`);
+                resolve();
+            });
+        });
 
-        await fsp.mkdir(tempDir, { recursive: true });
-        
-        const renderText = (script || headline || topic).substring(0, 100); 
-        const outputPath = path.join(tempDir, 'output.mp4');
-        
-        // Simple FFmpeg command
-        const ffmpegCmd = `ffmpeg -f lavfi -i color=c=black:s=1080x1920:d=5 -t 5 \
-            -vf "drawtext=text='${renderText.replace(/'/g, "\\'")}':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2" \
-            -c:v libx264 -pix_fmt yuv420p -y "${outputPath}"`; 
-        
-        console.log(`[${requestId}] Executing FFmpeg...`);
-        
-        try {
-            await execAsync(ffmpegCmd, { timeout: 30000 });
-        } catch (execError) {
-            if (execError.message && execError.message.includes('not found')) {
-                throw new Error("FFmpeg not found. Check Nixpacks configuration.");
-            }
-            throw execError;
-        }
+        // --- 3. Upload to S3 ---
+        const s3Key = `output/${videoId}/${outputFilename}`;
+        const finalVideoUrl = await uploadToStorage(outputPath, s3Key);
 
-        // --- UPLOAD THE FILE VIA STREAM ---
-        // We pass the file path, NOT the buffer, to avoid RAM usage
-        const videoUrl = await uploadToStorage(outputPath, `output_${requestId}.mp4`); 
-        
-        // --- Cleanup ---
-        await fsp.rm(tempDir, { recursive: true, force: true });
-        
-        res.json({
+        // --- 4. Clean up temporary file ---
+        fs.unlinkSync(outputPath);
+        console.log(`[${renderId}] Cleaned up temp file: ${outputPath}`);
+
+        // --- 5. SUCCESS RESPONSE (The FIX!) ---
+        // This sends the URL back to the waiting Base44 Deno function.
+        return res.json({
             success: true,
-            videoUrl: videoUrl, 
-            duration: 5
+            videoUrl: finalVideoUrl, 
+            videoId: videoId,
+            title: title
         });
+
+    } catch (e) {
+        console.error(`[${renderId}] Pipeline error:`, e.message);
         
-    } catch (error) {
-        console.error(`[${requestId}] Error:`, error.message);
-        
-        // Attempt reliable cleanup
-        try {
-            await fsp.rm(tempDir, { recursive: true, force: true });
-        } catch {}
-        
-        res.status(500).json({
-            success: false,
-            error: error.message || 'Internal server error during rendering'
+        // Return error response
+        return res.status(500).json({ 
+            success: false, 
+            error: e.message 
         });
+
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+
+// --- Health Check / Root ---
+app.get('/', (req, res) => {
+    res.send('Video Rendering Service Running');
+});
+
+// --- Start Server ---
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
 });
