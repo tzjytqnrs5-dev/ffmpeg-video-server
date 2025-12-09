@@ -25,15 +25,13 @@ app.use(express.json({ limit: '50mb' }));
  * @param {string} fileName - The name of the file.
  * @returns {Promise<string>} - The publicly accessible URL of the uploaded video.
  */
+// TEMPORARY CODE FOR STABILITY TESTING ONLY
 async function uploadToStorage(buffer, fileName) {
-    // 🛑 IMPORTANT: Replace this with real logic.
-    console.log(`[Storage] Uploading ${fileName} (${buffer.length} bytes)...`);
+    console.log(`[Storage] Skipping upload for test. Buffer size: ${buffer.length} bytes`);
     
-    // For now, return a placeholder URL to prevent crashes.
-    return `https://your-storage-bucket.com/videos/output-${crypto.randomBytes(4).toString('hex')}.mp4`;
+    // Return a dummy URL that your Deno script can process successfully
+    return `https://TEST-SUCCESS-STABLE-URL.com/test_${fileName}`;
 }
-// --------------------------------------------------------
-
 
 // Health check
 app.get('/health', (req, res) => {
