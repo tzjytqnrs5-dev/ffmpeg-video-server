@@ -1,7 +1,5 @@
 [phases.setup]
-# FINAL FIX: Removed the problematic 'libx264' package.
-# We are only keeping 'nodejs' and the core 'ffmpeg' binary.
-nixPkgs = ['nodejs', 'ffmpeg'] 
+nixPkgs = ['nodejs', 'ffmpeg']
 
 [phases.install]
 cmds = ['npm install']
