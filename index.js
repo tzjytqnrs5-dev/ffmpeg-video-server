@@ -1,143 +1,110 @@
-// index.js (Railway Backend Service)
+import { createClientFromRequest } from 'npm:@base44/sdk@0.8.4';
 
-const express = require('express');
-const { exec } = require('child_process');
-const AWS = require('aws-sdk');
-const fs = require('fs');
-const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+// IMPORTANT: This should be the URL of your successfully deployed Railway rendering service
+const RAILWAY_API = "https://strong-alignment-production-c935.up.railway.app/render";
 
-const app = express();
-// Railway provides the PORT, default to 3000 for local testing
-const port = process.env.PORT || 3000; 
-
-// Middleware to parse JSON body
-app.use(express.json());
-
-// --- AWS S3 Configuration ---
-const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME; // e.g., 'videobuckettippy'
-const AWS_REGION = process.env.AWS_REGION || 'us-east-2'; // Verified as 'us-east-2'
-
-// Initialize S3 client (uses env vars AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY)
-const s3 = new AWS.S3({
-    region: AWS_REGION
-});
-
-// --- Utility Function to Upload to S3 ---
-async function uploadToStorage(filePath, s3Key) {
-    if (!S3_BUCKET_NAME) {
-        throw new Error("S3_BUCKET_NAME is not set.");
-    }
-
-    const fileStream = fs.createReadStream(filePath);
-
-    const params = {
-        Bucket: S3_BUCKET_NAME,
-        Key: s3Key,
-        Body: fileStream,
-        ContentType: 'video/mp4',
-        ACL: 'public-read' 
-    };
-
+Deno.serve(async (req) => {
+    console.log('=== FUNCTION STARTED (Base44 Integration) ===');
+    
+    // --- FIX: Clone request BEFORE consuming the body ---
+    // Create a disposable clone for the SDK to potentially consume headers/body for auth.
+    // This prevents the original 'req' body from becoming 'unusable' before req.json() is called.
+    const base44Req = req.clone(); 
+    
     try {
-        console.log(`[Storage] Uploading to S3 key: ${s3Key}`);
-        const s3Response = await s3.upload(params).promise();
-        console.log(`[Storage] S3 Upload COMPLETE. Location: ${s3Response.Location}`);
-        return s3Response.Location;
-    } catch (error) {
-        console.error(`[Storage] S3 upload failed:`, error.message);
-        // Clean up temp file before throwing the error if possible
-        try { fs.unlinkSync(filePath); } catch (cleanupError) { /* ignore */ }
-        throw new Error(`S3 upload failed: ${error.message}`);
-    }
-}
-
-
-// --- Main Render Endpoint ---
-app.post('/render', async (req, res) => {
-    const { topic, script, title, backgroundVideoUrl, videoId } = req.body;
-    
-    // Use a unique ID for the FFmpeg process
-    const renderId = uuidv4();
-    
-    // Temp path for rendered video (using /tmp as required for container storage)
-    const outputFilename = `output_${renderId}.mp4`;
-    const outputPath = path.join('/tmp', outputFilename); 
-    
-    console.log(`[${renderId}] Render request received for topic: "${topic}"`);
-
-    // --- 1. Define FFmpeg Command ---
-    // NOTE: Replace the fontfile and complex filters with your actual requirements
-    const ffmpegCommand = `
-        ffmpeg -y -i "${backgroundVideoUrl}" -t 30 
-        -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${script}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=48:fontcolor=white:box=1:boxcolor=0x000000AA"
-        -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p 
-        ${outputPath}
-    `.replace(/\s+/g, ' ').trim();
-
-    try {
-        // --- 2. Execute FFmpeg ---
-        console.log(`[${renderId}] Executing FFmpeg...`);
+        // Create the Base44 client using the cloned request
+        const base44 = createClientFromRequest(base44Req);
         
-        await new Promise((resolve, reject) => {
-            exec(ffmpegCommand, { maxBuffer: 1024 * 50000 }, (error, stdout, stderr) => {
-                if (error) {
-                    console.error(`[${renderId}] FFmpeg Execution Error:`, error);
-                    console.error(`[${renderId}] FFmpeg Stderr:`, stderr);
-                    return reject(new Error(`FFmpeg failed: ${error.message}`));
-                }
-                console.log(`[${renderId}] FFmpeg command completed successfully.`);
-                resolve();
-            });
+        const user = await base44.auth.me();
+        if (!user) {
+            return Response.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
+        // Now safely read the body from the original request
+        const body = await req.json();
+        const { topic, templateId, templateName, videoId } = body;
+        
+        if (!topic || !videoId) {
+            return Response.json({ success: false, error: 'Topic and videoId are required' }, { status: 400 });
+        }
+        
+        // --- STEP 1: AI SCRIPT GENERATION ---
+        console.log(`🧠 Base44: Calling 'generateVideoScript' for topic: "${topic}"...`);
+        const scriptResponse = await base44.functions.invoke('generateVideoScript', { topic: topic });
+        const scriptResult = scriptResponse.data;
+        
+        if (!scriptResult || !scriptResult.title || !scriptResult.script) {
+            return Response.json({ success: false, error: 'Base44 script generation failed or returned invalid format.' }, { status: 500 });
+        }
+        const { title, script } = scriptResult;
+        console.log(`✅ Script generated. Title: ${title}`);
+
+
+        // --- STEP 2: PEXELS MEDIA FETCH ---
+        console.log(`🎥 Base44: Calling 'fetchPexelsVideo' for topic: "${topic}"...`);
+        const mediaResponse = await base44.functions.invoke('fetchPexelsVideo', { topic: topic });
+        const mediaResult = mediaResponse.data;
+        
+        if (!mediaResult || !mediaResult.background_media_url) {
+            return Response.json({ success: false, error: 'Base44 Pexels fetching failed or returned invalid format.' }, { status: 500 });
+        }
+        const backgroundVideoUrl = mediaResult.background_media_url;
+        console.log(`✅ Pexels URL fetched: ${backgroundVideoUrl}`);
+
+
+        // --- STEP 3: RAILWAY RENDER CALL (Final API) ---
+        console.log('🚀 Calling Railway API for Final Render: ' + RAILWAY_API);
+        
+        const renderPayload = {
+            topic,
+            title,
+            script,
+            backgroundVideoUrl,
+            templateId: templateId || 'default',
+            templateName: templateName || 'default',
+            videoId,
+            // Include AWS credentials if the rendering service requires them in the body
+            // This is generally not recommended, but included for completeness if your setup needs it.
+            // awsAccessKey: Deno.env.get('AWS_ACCESS_KEY_ID'), 
+            // awsSecretKey: Deno.env.get('AWS_SECRET_ACCESS_KEY'),
+        };
+
+        const renderResponse = await fetch(RAILWAY_API, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                // IMPORTANT: Add your secret API key for your Railway service if it needs to be protected
+                // 'Authorization': `Bearer ${Deno.env.get('RAILWAY_SERVICE_API_KEY')}`
+            },
+            body: JSON.stringify(renderPayload),
         });
 
-        // --- 3. Upload to S3 ---
-        const s3Key = `output/${videoId}/${outputFilename}`;
-        const finalVideoUrl = await uploadToStorage(outputPath, s3Key);
+        if (!renderResponse.ok) {
+            const errorText = await renderResponse.text();
+            console.error(`💥 Railway API failed with status ${renderResponse.status}: ${errorText}`);
+            return Response.json({ success: false, error: `Video rendering service failed: ${renderResponse.status}` }, { status: 502 });
+        }
 
-        // --- 4. Clean up temporary file ---
-        fs.unlinkSync(outputPath);
-        console.log(`[${renderId}] Cleaned up temp file: ${outputPath}`);
-
-        // --- 5. SUCCESS RESPONSE (Sends URL back to Base44) ---
-        return res.json({
-            success: true,
-            videoUrl: finalVideoUrl, 
-            videoId: videoId,
-            title: title
+        const renderResult = await renderResponse.json();
+        
+        if (!renderResult.videoUrl) {
+            console.error('No video URL in Railway response:', renderResult);
+            // This is the S3 error you were seeing before. It needs to be fixed on the Railway side.
+            return Response.json({ success: false, error: `No video URL received. Check Railway logs for S3 Access Denied.` }, { status: 500 });
+        }
+        
+        // --- STEP 4: RETURN SUCCESS ---
+        console.log(`🎉 Video render initiated/complete. URL: ${renderResult.videoUrl}`);
+        return Response.json({ 
+            success: true, 
+            videoUrl: renderResult.videoUrl, 
+            title: title 
         });
 
     } catch (e) {
-        console.error(`[${renderId}] Pipeline error:`, e.message);
-        
-        // Clean up temp file on failure
-        try { fs.unlinkSync(outputPath); } catch (cleanupError) { /* ignore */ }
-
-        // Return error response
-        return res.status(500).json({ 
-            success: false, 
-            error: e.message 
-        });
-
+        console.error("💥 FATAL ERROR:", e);
+        return Response.json({ success: false, error: e.message }, { status: 500 });
+    } finally {
+        console.log('=== FUNCTION ENDED ===');
     }
-});
-
-
-// 🚀 HEALTH CHECK ENDPOINT (The fix for the "service unavailable" error)
-// Railway's healthcheck is looking for this path and a 200 response.
-app.get('/health', (req, res) => {
-    res.status(200).send('OK'); 
-});
-
-
-// --- Root Endpoint ---
-app.get('/', (req, res) => {
-    res.send('Video Rendering Service Running');
-});
-
-// --- Start Server (The binding fix) ---
-// We explicitly bind to '::' (IPv6 wildcard) to ensure it listens on all interfaces,
-// which is the most robust way to start a server in a container environment like Railway.
-app.listen(port, '::', () => { 
-    console.log(`Server running on port ${port} and binding to all interfaces.`);
 });
