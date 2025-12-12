@@ -28,11 +28,9 @@ app.use(express.json());
 AWS.config.update({ region: process.env.AWS_REGION || 'us-east-2' });
 const s3 = new AWS.S3();
 
-const TMP_DIR = path.join(__dirname, 'temp');
-if (!fs.existsSync(TMP_DIR)) {
-    fs.mkdirSync(TMP_DIR, { recursive: true });
-    console.log(`✅ Created temp directory: ${TMP_DIR}`);
-}
+// Use /tmp directory which is writable on Railway
+const TMP_DIR = '/tmp';
+console.log(`✅ Using temp directory: ${TMP_DIR}`);
 
 // Download file from URL
 const downloadFile = (url, destPath) => {
@@ -77,11 +75,6 @@ app.post('/render', async (req, res) => {
     const bgVideoPath = path.join(TMP_DIR, `${videoId}-bg.mp4`);
 
     try {
-        // Ensure temp directory exists
-        if (!fs.existsSync(TMP_DIR)) {
-            fs.mkdirSync(TMP_DIR, { recursive: true });
-        }
-
         console.log(`📹 Starting render for videoId: ${videoId}`);
         console.log(`📥 Downloading background video...`);
         
