@@ -104,8 +104,12 @@ app.post('/render', async (req, res) => {
 
             // Add text overlay if title provided
             if (escapedTitle) {
+            // Calculate dynamic font size based on text length
+                const textLength = escapedTitle.length;
+                const fontSize = textLength > 50 ? 30 : textLength > 30 ? 40 : 50;
+                
                 command.videoFilters(
-                    `drawtext=text='${escapedTitle}':fontsize=50:fontcolor=white:x=(w-text_w)/2:y=h-th-50:box=1:boxcolor=black@0.5:boxborderw=10`
+                    `drawtext=text='${escapedTitle}':fontsize=${fontSize}:fontcolor=white:x=if(gt(text_w\,w*0.9)\,(w-w*0.9)/2\,(w-text_w)/2):y=h-th-50:box=1:boxcolor=black@0.5:boxborderw=10`
                 );
             }
 
