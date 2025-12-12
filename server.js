@@ -33,8 +33,8 @@ if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR);
 }
 
-// Base44 Webhook URL
-const BASE44_WEBHOOK_URL = 'https://693771fbef7c3625b50b34df.base44.app/api/functions/updateVideoStatus';
+// Base44 Webhook URL - UPDATED WITH /v1
+const BASE44_WEBHOOK_URL = 'https://693771fbef7c3625b50b34df.base44.app/api/v1/functions/updateVideoStatus';
 
 // Helper function to download video
 const downloadFile = (url, destPath) => {
