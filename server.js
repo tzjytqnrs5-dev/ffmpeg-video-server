@@ -1,4 +1,4 @@
-// server.js (The single file for your Railway Node.js renderer)
+// server.js (Cleaned up - no webhooks, S3 triggers handle status updates)
 
 import express from 'express';
 import cors from 'cors';
@@ -34,10 +34,6 @@ if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR, { recursive: true });
     console.log(`✅ Created temp directory at: ${TMP_DIR}`);
 }
-
-// Base44 Webhook URL
-const BASE44_WEBHOOK_URL = 'https://693771fbef7c3625b50b34df.base44.app/api/v1/functions/updateVideoStatus';
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 // Helper function to download video
 const downloadFile = (url, destPath) => {
@@ -108,47 +104,21 @@ app.post('/render', async (req, res) => {
 
         const finalVideoPath = await renderPromise;
 
-        // S3 Upload
+        // S3 Upload - this triggers Lambda which calls Base44
         console.log('Uploading video to S3...');
         const fileStream = fs.createReadStream(finalVideoPath);
         
         const uploadParams = {
             Bucket: process.env.S3_BUCKET_NAME, 
-            Key: outputFileName,
+            Key: outputFileName, // Must be {videoId}-final-video.mp4 for Lambda to parse
             Body: fileStream,
             ContentType: 'video/mp4',
             ACL: 'public-read'
         };
         
         const s3UploadResult = await s3.upload(uploadParams).promise(); 
-        console.log('S3 Upload Successful:', s3UploadResult.Location);
-
-        // Call Base44 Webhook to Update Video Status
-        console.log('Calling Base44 webhook to update video status...');
-        try {
-            const webhookResponse = await fetch(BASE44_WEBHOOK_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${WEBHOOK_SECRET}`
-                },
-                body: JSON.stringify({
-                    videoId: videoId,
-                    videoUrl: s3UploadResult.Location,
-                    status: 'completed'
-                }),
-            });
-            
-            if (webhookResponse.ok) {
-                console.log('✅ Base44 webhook called successfully');
-            } else {
-                const responseText = await webhookResponse.text();
-                console.error('⚠️ Base44 webhook failed with status:', webhookResponse.status, responseText);
-            }
-        } catch (webhookError) {
-            console.error('⚠️ Failed to call Base44 webhook:', webhookError.message);
-            // Continue anyway - video is already uploaded to S3
-        }
+        console.log('✅ S3 Upload Successful:', s3UploadResult.Location);
+        console.log('✅ Lambda will now trigger and update Base44 status');
 
         // Cleanup
         fs.unlinkSync(finalVideoPath);
@@ -158,25 +128,6 @@ app.post('/render', async (req, res) => {
 
     } catch (e) {
         console.error('💥 Rendering Pipeline Fatal Error:', e.message);
-        
-        // Try to update video status to failed
-        try {
-            await fetch(BASE44_WEBHOOK_URL, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${WEBHOOK_SECRET}`
-                },
-                body: JSON.stringify({
-                    videoId: videoId,
-                    videoUrl: '',
-                    status: 'failed'
-                }),
-            });
-        } catch (webhookError) {
-            console.error('Failed to call failure webhook:', webhookError.message);
-        }
-        
         res.status(500).json({ success: false, error: `Video rendering failed: ${e.message}` });
     }
 });
