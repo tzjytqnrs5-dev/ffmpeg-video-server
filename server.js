@@ -18,7 +18,7 @@ const HOST = '0.0.0.0';
 const app = express();
 
 app.use(cors()); // Allow all origins
-app.use(express.json({ limit: '50mb' })); // Increased limit for base64 responses
+app.use(express.json());
 
 // AWS Configuration - REQUIRED ENV VARS:
 // - S3_BUCKET_NAME (e.g., "videobuckettippy")
@@ -112,21 +112,14 @@ app.post('/render', async (req, res) => {
             command.save(outputPath);
         });
 
-        console.log(`📦 Converting to base64...`);
-        
-        // Read the video file and convert to base64
-        const videoBuffer = fs.readFileSync(outputPath);
-        const base64Video = videoBuffer.toString('base64');
-        const fileSizeMB = (base64Video.length / 1024 / 1024).toFixed(2);
-        console.log(`✅ Base64 conversion complete (${fileSizeMB} MB)`);
-
         console.log(`☁️ Uploading to S3...`);
         
-        // Upload to S3 (using the buffer we already have)
+        // Upload to S3
+        const fileStream = fs.createReadStream(outputPath);
         const uploadParams = {
             Bucket: process.env.S3_BUCKET_NAME, 
             Key: outputFileName,
-            Body: videoBuffer,
+            Body: fileStream,
             ContentType: 'video/mp4',
             ACL: 'public-read'
         };
@@ -139,11 +132,10 @@ app.post('/render', async (req, res) => {
         fs.unlinkSync(bgVideoPath);
         console.log(`🧹 Cleaned up temp files`);
 
-        // Return success with BOTH video URL and base64
+        // Return success with video URL
         res.json({ 
             success: true, 
             videoUrl: s3Result.Location,
-            videoBase64: base64Video,
             videoId: videoId
         });
 
