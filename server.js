@@ -28,9 +28,11 @@ app.use(express.json());
 AWS.config.update({ region: process.env.AWS_REGION || 'us-west-2' });
 const s3 = new AWS.S3();
 
+// Ensure temp directory exists with proper permissions
 const TMP_DIR = path.join(__dirname, 'temp');
 if (!fs.existsSync(TMP_DIR)) {
-    fs.mkdirSync(TMP_DIR);
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+    console.log(`✅ Created temp directory at: ${TMP_DIR}`);
 }
 
 // Base44 Webhook URL
@@ -67,10 +69,16 @@ app.post('/render', async (req, res) => {
 
     const outputFileName = `${videoId}-final-video.mp4`;
     const outputPath = path.join(TMP_DIR, outputFileName);
-    const bgVideoPath = path.join(TMP_DIR, `${videoId}-bg.mp4`); 
+    const bgVideoPath = path.join(TMP_DIR, `${videoId}-bg.mp4`);
 
     try {
+        // Double-check temp directory exists before each render
+        if (!fs.existsSync(TMP_DIR)) {
+            fs.mkdirSync(TMP_DIR, { recursive: true });
+        }
+
         console.log(`Starting FFmpeg render for ${videoId}...`);
+        console.log(`Output path: ${outputPath}`);
         console.log(`Downloading background video from: ${backgroundVideoUrl}`);
         
         // Download the background video
