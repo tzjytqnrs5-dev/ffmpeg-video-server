@@ -33,8 +33,9 @@ if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR);
 }
 
-// Base44 Webhook URL - UPDATED WITH /v1
+// Base44 Webhook URL
 const BASE44_WEBHOOK_URL = 'https://693771fbef7c3625b50b34df.base44.app/api/v1/functions/updateVideoStatus';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 // Helper function to download video
 const downloadFile = (url, destPath) => {
@@ -121,6 +122,7 @@ app.post('/render', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${WEBHOOK_SECRET}`
                 },
                 body: JSON.stringify({
                     videoId: videoId,
@@ -132,7 +134,8 @@ app.post('/render', async (req, res) => {
             if (webhookResponse.ok) {
                 console.log('✅ Base44 webhook called successfully');
             } else {
-                console.error('⚠️ Base44 webhook failed with status:', webhookResponse.status);
+                const responseText = await webhookResponse.text();
+                console.error('⚠️ Base44 webhook failed with status:', webhookResponse.status, responseText);
             }
         } catch (webhookError) {
             console.error('⚠️ Failed to call Base44 webhook:', webhookError.message);
@@ -152,7 +155,10 @@ app.post('/render', async (req, res) => {
         try {
             await fetch(BASE44_WEBHOOK_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${WEBHOOK_SECRET}`
+                },
                 body: JSON.stringify({
                     videoId: videoId,
                     videoUrl: '',
