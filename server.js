@@ -83,7 +83,27 @@ app.post('/render', async (req, res) => {
         console.log(`✅ Background video downloaded`);
 
         // Escape single quotes for FFmpeg
-        const escapedTitle = title ? title.replace(/'/g, "\\'") : '';
+        // Escape single quotes and wrap long text
+        let escapedTitle = title ? title.replace(/'/g, "\\'") : '';
+        
+        // Wrap text at ~40 characters per line
+        if (escapedTitle.length > 40) {
+            const words = escapedTitle.split(' ');
+            let lines = [];
+            let currentLine = '';
+            
+            words.forEach(word => {
+                if ((currentLine + ' ' + word).length > 40) {
+                    lines.push(currentLine.trim());
+                    currentLine = word;
+                } else {
+                    currentLine += (currentLine ? ' ' : '') + word;
+                }
+            });
+            if (currentLine) lines.push(currentLine.trim());
+            
+            escapedTitle = lines.join('\\n');
+        }
         
         console.log(`🎬 Running FFmpeg...`);
         
