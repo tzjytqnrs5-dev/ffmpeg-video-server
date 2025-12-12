@@ -33,6 +33,9 @@ if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR);
 }
 
+// Base44 Webhook URL
+const BASE44_WEBHOOK_URL = 'https://693771fbef7c3625b50b34df.base44.app/api/functions/updateVideoStatus';
+
 // Helper function to download video
 const downloadFile = (url, destPath) => {
     return new Promise((resolve, reject) => {
@@ -111,6 +114,31 @@ app.post('/render', async (req, res) => {
         const s3UploadResult = await s3.upload(uploadParams).promise(); 
         console.log('S3 Upload Successful:', s3UploadResult.Location);
 
+        // Call Base44 Webhook to Update Video Status
+        console.log('Calling Base44 webhook to update video status...');
+        try {
+            const webhookResponse = await fetch(BASE44_WEBHOOK_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    videoId: videoId,
+                    videoUrl: s3UploadResult.Location,
+                    status: 'completed'
+                }),
+            });
+            
+            if (webhookResponse.ok) {
+                console.log('✅ Base44 webhook called successfully');
+            } else {
+                console.error('⚠️ Base44 webhook failed with status:', webhookResponse.status);
+            }
+        } catch (webhookError) {
+            console.error('⚠️ Failed to call Base44 webhook:', webhookError.message);
+            // Continue anyway - video is already uploaded to S3
+        }
+
         // Cleanup
         fs.unlinkSync(finalVideoPath);
         fs.unlinkSync(bgVideoPath);
@@ -119,6 +147,22 @@ app.post('/render', async (req, res) => {
 
     } catch (e) {
         console.error('💥 Rendering Pipeline Fatal Error:', e.message);
+        
+        // Try to update video status to failed
+        try {
+            await fetch(BASE44_WEBHOOK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    videoId: videoId,
+                    videoUrl: '',
+                    status: 'failed'
+                }),
+            });
+        } catch (webhookError) {
+            console.error('Failed to call failure webhook:', webhookError.message);
+        }
+        
         res.status(500).json({ success: false, error: `Video rendering failed: ${e.message}` });
     }
 });
